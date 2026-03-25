@@ -305,12 +305,12 @@ export default function FlocksPage() {
 
       <div className="registry-header">
         <div className="registry-heading">
-          <h1 className="registry-title">Flocks</h1>
-          <span className="registry-count">{activeCount.toLocaleString()} active flocks</span>
+          <h1 className="registry-title">Batches</h1>
+          <span className="registry-count">{activeCount.toLocaleString()} active batches</span>
         </div>
         <button type="button" className="settings-btn" onClick={openCreateModal}>
           <ActionIcon name="plus" />
-          Add flock
+          Add batch
         </button>
       </div>
 
@@ -321,7 +321,7 @@ export default function FlocksPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="filter-input registry-search"
-              placeholder="Search flocks"
+              placeholder="Search batches"
             />
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'All' | Flock['status'])}>
               <option value="All">All status</option>
@@ -442,9 +442,9 @@ export default function FlocksPage() {
                   <td colSpan={10}>
                     <div className="empty-table-state">
                       <div className="empty-watermark" aria-hidden="true">
-                        FLOCKS
+                        BATCHES
                       </div>
-                      <div className="empty-table-copy">No flocks match the current filters.</div>
+                      <div className="empty-table-copy">No batches match the current filters.</div>
                     </div>
                   </td>
                 </tr>
@@ -483,8 +483,8 @@ export default function FlocksPage() {
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h2>{editingFlockId ? 'Edit Flock' : 'Create New Flock'}</h2>
-                <p>Fill in the flock details and save your changes.</p>
+                <h2>{editingFlockId ? 'Edit Batch' : 'Create New Batch'}</h2>
+                <p>Fill in the batch details and save your changes.</p>
               </div>
               <button type="button" className="modal-close" onClick={closeFormModal}>X</button>
             </div>
@@ -492,7 +492,7 @@ export default function FlocksPage() {
             <form className="modal-form-shell" onSubmit={handleSaveFlock}>
               <div className="modal-body modal-body-scroll">
                 <div className="flock-form modal-form">
-                  <label><span>Flock name</span><input name="name" value={flockForm.name} onChange={handleFlockInputChange} placeholder="Batch A - 500 birds" /></label>
+                  <label><span>Batch name</span><input name="name" value={flockForm.name} onChange={handleFlockInputChange} placeholder="Batch A - 500 birds" /></label>
                   <label><span>Size</span><input name="size" type="number" min="1" value={flockForm.size} onChange={handleFlockInputChange} placeholder="500" /></label>
                   <label className="split-field">
                     <span>Age</span>
@@ -531,7 +531,7 @@ export default function FlocksPage() {
               </div>
               <div className="modal-actions">
                 <button type="button" className="ghost-btn modal-btn" onClick={closeFormModal}>Cancel</button>
-                <button type="submit" className="primary-btn modal-btn">{editingFlockId ? 'Update flock' : 'Create flock'}</button>
+                <button type="submit" className="primary-btn modal-btn">{editingFlockId ? 'Update batch' : 'Create batch'}</button>
               </div>
             </form>
           </div>
@@ -583,10 +583,10 @@ export default function FlocksPage() {
             <div className="modal-body modal-body-scroll">
               <p className="modal-copy">
                 {actionModal.type === 'delete'
-                  ? 'This action will permanently remove the flock from the register.'
+                  ? 'This action will permanently remove the batch from the register.'
                   : actionModal.type === 'archive'
-                    ? 'This flock will be moved out of the active list and kept as an archived record.'
-                    : 'This flock will be returned to the active list.'}
+                    ? 'This batch will be moved out of the active list and kept as an archived record.'
+                    : 'This batch will be returned to the active list.'}
               </p>
             </div>
 
@@ -597,7 +597,7 @@ export default function FlocksPage() {
                 className={`primary-btn modal-btn ${actionModal.type === 'delete' ? 'danger-solid-btn' : ''}`}
                 onClick={handleConfirmAction}
               >
-                {actionModal.type === 'delete' ? 'Delete flock' : actionModal.type === 'archive' ? 'Archive flock' : 'Restore flock'}
+                {actionModal.type === 'delete' ? 'Delete batch' : actionModal.type === 'archive' ? 'Archive batch' : 'Restore batch'}
               </button>
             </div>
           </div>

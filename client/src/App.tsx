@@ -2,8 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import CasesPage from './CasesPage'
 import FlocksPage from './FlocksPage'
+import ModellingPage from './ModellingPage'
+import ReportsPage from './ReportsPage'
+import SettingsPage from './SettingsPage'
+import loginLogoImage from './assets/images/logoo (2).png'
 
 const API_BASE = '/api'
+const AUTH_STORAGE_KEY = 'broiler-authenticated'
+const ACTIVE_PAGE_STORAGE_KEY = 'broiler-active-page'
+const DEFAULT_USERNAME = 'sysadmin'
+const DEFAULT_PASSWORD = 'password123'
+const DEFAULT_USER_FULL_NAME = 'System Administrator'
 
 interface Prediction {
   disease: string
@@ -24,11 +33,78 @@ interface PredictionResultItem {
   prediction: Prediction
 }
 
+interface PredictToast {
+  text: string
+  tone: 'success' | 'error'
+}
+
+interface DiseaseSummary {
+  disease: string
+  count: number
+  highestConfidence: number
+}
+
+interface ReportRow {
+  caseId: string
+  flock: string
+  date: string
+  disease: string
+  confidence: number
+  status: string
+  recommendation: string
+}
+
+interface DashboardMetricCard {
+  label: string
+  value: string
+  change: string
+  trend: 'up' | 'down'
+  icon: string
+}
+
+interface DashboardQuickStat {
+  value: string
+  label: string
+}
+
+interface DashboardRiskLevel {
+  label: string
+  value: string
+  width: string
+}
+
+interface DashboardWorkflowRow {
+  label: string
+  value: string
+}
+
+interface DashboardInsightRow {
+  title: string
+  meta: string
+}
+
+interface DashboardSummary {
+  model_ready: boolean
+  hero_tags: string[]
+  hero_side: {
+    suspected_cases: string
+    detection_model: string
+  }
+  overview_cards: DashboardMetricCard[]
+  quick_stats: DashboardQuickStat[]
+  risk_levels: DashboardRiskLevel[]
+  workflow_rows: DashboardWorkflowRow[]
+  insight_rows: DashboardInsightRow[]
+  screening_volume: number[]
+  prediction_trend: number[]
+  alert_trend: number[]
+}
+
 type PageKey = 'Dashboard' | 'Flocks' | 'Cases' | 'Predict Disease' | 'Modelling' | 'Reports' | 'Settings'
 
 const sidebarItems = [
   { label: 'Dashboard', icon: 'grid' },
-  { label: 'Flocks', icon: 'barn' },
+  { label: 'Batch', pageKey: 'Flocks', icon: 'chicken' },
   { label: 'Cases', icon: 'alert' },
   { label: 'Predict Disease', icon: 'pulse' },
   { label: 'Modelling', icon: 'model' },
@@ -69,48 +145,97 @@ const insightRows = [
   { title: 'Mortality trend improved across two treated flocks', meta: '1 hour ago' },
 ]
 
-function App() {
+const predictionFlockOptions = [
+  'Batch A - 500 birds',
+  'Layer Unit C',
+  'Block D',
+  'Starter Pen 2',
+]
+
+  function App() {
+    const [isAuthenticated, setIsAuthenticated] = useState(() => localStorage.getItem(AUTH_STORAGE_KEY) === 'true')
+  const [loginUsername, setLoginUsername] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
   const [selectedImages, setSelectedImages] = useState<SelectedImage[]>([])
   const [results, setResults] = useState<PredictionResultItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [uploadingImages, setUploadingImages] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
   const [modelReady, setModelReady] = useState<boolean | null>(null)
-  const [dashboardLoading, setDashboardLoading] = useState(true)
+  const [dashboardData, setDashboardData] = useState<DashboardSummary | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [activePage, setActivePage] = useState<PageKey>('Dashboard')
+  const [activePage, setActivePage] = useState<PageKey>(() => {
+    const storedPage = localStorage.getItem(ACTIVE_PAGE_STORAGE_KEY)
+    const allowedPages: PageKey[] = ['Dashboard', 'Flocks', 'Cases', 'Predict Disease', 'Modelling', 'Reports', 'Settings']
+    return storedPage && allowedPages.includes(storedPage as PageKey) ? (storedPage as PageKey) : 'Dashboard'
+  })
+  const [selectedPredictionFlock, setSelectedPredictionFlock] = useState('')
+  const isDashboardLoading = dashboardData === null && modelReady === null
+  const weeklyScreeningData = isDashboardLoading ? [18, 42, 28, 56, 36, 64, 44] : dashboardData?.screening_volume ?? [0, 0, 0, 0, 0, 0, 0]
+  const predictionTrendData = isDashboardLoading ? [8, 14, 12, 18, 16, 21, 19, 24] : dashboardData?.prediction_trend ?? [0, 0, 0, 0, 0, 0, 0, 0]
+  const alertTrendData = isDashboardLoading ? [4, 9, 7, 13, 11, 15, 14, 18] : dashboardData?.alert_trend ?? [0, 0, 0, 0, 0, 0, 0, 0]
+  const pageTitle =
+    activePage === 'Predict Disease' && results.length > 0 ? '' : activePage === 'Flocks' ? 'Batch' : activePage
+  const loggedInFullName = DEFAULT_USER_FULL_NAME
 
   useEffect(() => {
-    checkStatus(true)
+    checkStatus()
   }, [])
 
   useEffect(() => {
-    return () => {
-      selectedImages.forEach((image) => URL.revokeObjectURL(image.preview))
-    }
+    if (!isAuthenticated) return
+    localStorage.setItem(ACTIVE_PAGE_STORAGE_KEY, activePage)
+  }, [activePage, isAuthenticated])
+
+  const selectedImagesRef = useRef<SelectedImage[]>([])
+
+  useEffect(() => {
+    selectedImagesRef.current = selectedImages
   }, [selectedImages])
 
-  const checkStatus = async (showSkeleton = false) => {
-    if (showSkeleton) {
-      setDashboardLoading(true)
+  useEffect(() => {
+    return () => {
+      selectedImagesRef.current.forEach((image) => URL.revokeObjectURL(image.preview))
     }
+  }, [])
 
+  const checkStatus = async () => {
     try {
-      const statusPromise = fetch(`${API_BASE}/status`)
-      const delayPromise = showSkeleton ? new Promise((resolve) => setTimeout(resolve, 700)) : Promise.resolve()
-      const [res] = await Promise.all([statusPromise, delayPromise])
+      const res = await fetch(`${API_BASE}/dashboard/summary`)
       const data = await res.json()
       setModelReady(data.model_ready)
+      setDashboardData(data)
     } catch {
       setModelReady(false)
-    } finally {
-      if (showSkeleton) {
-        setDashboardLoading(false)
-      }
+      setDashboardData(null)
     }
   }
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const pickedFiles = Array.from(e.target.files ?? [])
+    if (!pickedFiles.length) return
+
+    setUploadingImages(true)
+    setUploadProgress(0)
+
+    const totalFiles = pickedFiles.length
+    const nextFiles: File[] = []
+
+    for (const [index, file] of pickedFiles.entries()) {
+      nextFiles.push(file)
+      setUploadProgress(Math.round(((index + 1) / totalFiles) * 100))
+      await new Promise((resolve) => window.setTimeout(resolve, 80))
+    }
+
+    appendImages(nextFiles)
+    setUploadingImages(false)
+    setUploadProgress(0)
+    e.target.value = ''
+  }
+
+  const appendImages = (pickedFiles: File[]) => {
     if (!pickedFiles.length) return
 
     if (pickedFiles.some((selected) => !selected.type.startsWith('image/'))) {
@@ -137,12 +262,15 @@ function App() {
     })
     setResults([])
     setError(null)
-    e.target.value = ''
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!selectedImages.length) return
+    if (!selectedPredictionFlock) {
+      setError('Please choose the batch or flock for these droppings samples before running prediction.')
+      return
+    }
 
     setLoading(true)
     setError(null)
@@ -154,6 +282,7 @@ function App() {
       for (const image of selectedImages) {
         const formData = new FormData()
         formData.append('file', image.file)
+        formData.append('batch_name', selectedPredictionFlock)
 
         const res = await fetch(`${API_BASE}/predict`, {
           method: 'POST',
@@ -186,6 +315,45 @@ function App() {
     setError(null)
   }
 
+  const handleLogin = (event: React.FormEvent) => {
+    event.preventDefault()
+
+    if (loginUsername === DEFAULT_USERNAME && loginPassword === DEFAULT_PASSWORD) {
+      setIsAuthenticated(true)
+      setActivePage('Dashboard')
+      setLoginError('')
+      localStorage.setItem(AUTH_STORAGE_KEY, 'true')
+      localStorage.setItem(ACTIVE_PAGE_STORAGE_KEY, 'Dashboard')
+      return
+    }
+
+    setLoginError('Invalid username or password.')
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem(AUTH_STORAGE_KEY)
+    localStorage.removeItem(ACTIVE_PAGE_STORAGE_KEY)
+    setIsAuthenticated(false)
+    setLoginUsername('')
+    setLoginPassword('')
+    setLoginError('')
+    setMenuOpen(false)
+    setActivePage('Dashboard')
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <LoginScreen
+        username={loginUsername}
+        password={loginPassword}
+        error={loginError}
+        onUsernameChange={setLoginUsername}
+        onPasswordChange={setLoginPassword}
+        onSubmit={handleLogin}
+      />
+    )
+  }
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${menuOpen ? 'open' : ''}`}>
@@ -203,9 +371,9 @@ function App() {
             <button
               key={item.label}
               type="button"
-              className={activePage === item.label ? 'active' : ''}
+              className={activePage === (item.pageKey ?? item.label) ? 'active' : ''}
               onClick={() => {
-                setActivePage(item.label as PageKey)
+                setActivePage((item.pageKey ?? item.label) as PageKey)
                 setMenuOpen(false)
               }}
             >
@@ -214,32 +382,44 @@ function App() {
             </button>
           ))}
         </nav>
+
+        <div className="sidebar-footer">
+          <button type="button" className="sidebar-logout-btn" onClick={handleLogout}>
+            <Icon name="logout" />
+            <span>Logout</span>
+          </button>
+        </div>
       </aside>
 
       <div className={`backdrop ${menuOpen ? 'show' : ''}`} onClick={() => setMenuOpen(false)} />
 
       <main className="main-content">
-        <header className="top-nav">
-          <div className="top-nav-left">
-            <button type="button" className="menu-btn" onClick={() => setMenuOpen(true)} aria-label="Open sidebar">
-              Menu
-            </button>
-            <strong className="page-title">{activePage}</strong>
+          <header className="top-nav">
+            <div className="top-nav-left">
+              <button type="button" className="menu-btn" onClick={() => setMenuOpen(true)} aria-label="Open sidebar">
+                <svg className="menu-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 7h14" />
+                  <path d="M5 12h14" />
+                  <path d="M5 17h14" />
+                </svg>
+              </button>
+              <strong className="page-title">{pageTitle}</strong>
+            </div>
+          <div className="top-nav-right">
+            <span className="top-nav-divider">|</span>
+            <span className="top-nav-user-name">{loggedInFullName}</span>
           </div>
 
-          <div className="top-nav-right">
-            <span className={`status-badge ${modelReady ? 'ready' : 'offline'}`}>
-              {modelReady ? 'Model Ready' : 'Backend Offline'}
-            </span>
-            <span className="user-badge">Panashe</span>
-          </div>
         </header>
 
-        <section className={`main-content-scrollable ${activePage === 'Flocks' || activePage === 'Cases' ? 'page-flocks' : ''}`}>
+        <section
+          className={`main-content-scrollable ${
+            activePage === 'Flocks' || activePage === 'Cases' || activePage === 'Predict Disease' || activePage === 'Reports' || activePage === 'Settings'
+              ? 'page-flocks'
+              : ''
+          }`}
+        >
           {activePage === 'Dashboard' ? (
-            dashboardLoading ? (
-              <DashboardSkeleton />
-            ) : (
               <div className="dashboard-overview">
                 <section className="dashboard-hero">
                   <div className="hero-card">
@@ -249,20 +429,23 @@ function App() {
                       Monitor flock health, surface risky disease patterns, and run droppings-based screening from one responsive workspace.
                     </p>
                     <div className="hero-tags">
-                      <span>26 farms active</span>
-                      <span>184 droppings screenings today</span>
-                      <span>7 critical flocks flagged</span>
+                      {(dashboardData?.hero_tags ?? []).map((tag) => (
+                        <span key={tag}>{tag}</span>
+                      ))}
                     </div>
                   </div>
 
                   <div className="hero-side-card">
                     <div className="mini-stat">
                       <span>Suspected Cases</span>
-                      <strong>11 active cases</strong>
+                      <strong>{dashboardData?.hero_side.suspected_cases ?? '0 active cases'}</strong>
                     </div>
                     <div className="mini-stat">
                       <span>Detection Model</span>
-                      <strong>{modelReady ? 'Ready' : 'Offline'}</strong>
+                      <strong className="model-status-indicator">
+                        <span className={`model-status-dot ${modelReady ? 'online' : 'offline'}`} aria-hidden="true" />
+                        {dashboardData?.hero_side.detection_model ?? (modelReady ? 'Ready' : 'Offline')}
+                      </strong>
                     </div>
                     <button type="button" className="ghost-btn" onClick={() => checkStatus()}>
                       Refresh status
@@ -271,9 +454,9 @@ function App() {
                 </section>
 
                 <section className="dashboard-cards metric-strip">
-                  {overviewCards.map((card) => (
+                  {(dashboardData?.overview_cards ?? overviewCards).map((card) => (
                     <article key={card.label} className="dashboard-card">
-                      <div className={`dashboard-card-icon ${card.icon}`}>{iconGlyph(card.icon)}</div>
+                      <div className={`dashboard-card-icon ${card.icon}`}>{renderDashboardCardIcon(card.icon)}</div>
                       <div className="dashboard-card-label">{card.label}</div>
                       <div className="dashboard-card-value">{card.value}</div>
                       <div className={`dashboard-card-change ${card.trend}`}>{card.change}</div>
@@ -290,15 +473,19 @@ function App() {
                       </div>
                       <span className="chip">This week</span>
                     </div>
-                    <div className="chart-placeholder">
-                      <div className="chart-bars">
-                        <div className="bar" style={{ height: '50%' }} />
-                        <div className="bar alt" style={{ height: '38%' }} />
-                        <div className="bar" style={{ height: '72%' }} />
-                        <div className="bar alt" style={{ height: '44%' }} />
-                        <div className="bar" style={{ height: '86%' }} />
-                        <div className="bar alt" style={{ height: '61%' }} />
-                        <div className="bar" style={{ height: '65%' }} />
+                    <div className={`chart-placeholder ${isDashboardLoading ? 'chart-placeholder-loading' : ''}`}>
+                      <div className="chart-axis-label chart-axis-label-y">Samples</div>
+                      <div className={`chart-bars ${isDashboardLoading ? 'chart-bars-loading' : ''}`}>
+                        {weeklyScreeningData.map((value, index, array) => {
+                          const maxValue = Math.max(...array, 1)
+                          const height = `${Math.max((value / maxValue) * 100, 12)}%`
+                          return <div key={`${index}-${value}`} className={`bar ${index % 2 === 1 ? 'alt' : ''}`} style={{ height }} />
+                        })}
+                      </div>
+                      <div className="chart-axis-x">
+                        {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((label) => (
+                          <span key={label}>{label}</span>
+                        ))}
                       </div>
                     </div>
                   </section>
@@ -307,7 +494,7 @@ function App() {
                     <section className="chart-card">
                       <div className="chart-title">Field Summary</div>
                       <div className="quick-stats">
-                        {quickStats.map((stat) => (
+                        {(dashboardData?.quick_stats ?? quickStats).map((stat) => (
                           <div key={stat.label} className="quick-stat">
                             <span className="quick-stat-value">{stat.value}</span>
                             <span className="quick-stat-label">{stat.label}</span>
@@ -317,9 +504,9 @@ function App() {
                     </section>
 
                     <section className="chart-card">
-                      <div className="chart-title">Flock Health Levels</div>
+                      <div className="chart-title">Batch Health Levels</div>
                       <div className="risk-list">
-                        {riskLevels.map((item) => (
+                        {(dashboardData?.risk_levels ?? riskLevels).map((item) => (
                           <div key={item.label}>
                             <div className="risk-row">
                               <span>{item.label}</span>
@@ -344,21 +531,27 @@ function App() {
                       </div>
                       <span className="chip neutral">Trend view</span>
                     </div>
-                    <div className="chart-placeholder">
-                      <svg className="line-chart" viewBox="0 0 600 240" preserveAspectRatio="none">
+                    <div className={`chart-placeholder ${isDashboardLoading ? 'chart-placeholder-loading' : ''}`}>
+                      <div className="chart-axis-label chart-axis-label-y">Alerts</div>
+                      <svg className={`line-chart ${isDashboardLoading ? 'line-chart-loading' : ''}`} viewBox="0 0 600 240" preserveAspectRatio="none">
                         <polyline
                           fill="none"
                           stroke="#0ea5e9"
                           strokeWidth="4"
-                          points="20,180 100,150 180,160 260,110 340,120 420,85 500,70 580,55"
+                          points={buildPolylinePoints(predictionTrendData)}
                         />
                         <polyline
                           fill="none"
                           stroke="#ef4444"
                           strokeWidth="4"
-                          points="20,200 100,185 180,178 260,170 340,155 420,145 500,130 580,118"
+                          points={buildPolylinePoints(alertTrendData, 220, 90)}
                         />
                       </svg>
+                      <div className="chart-axis-x chart-axis-x-eight">
+                        {['W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W7', 'W8'].map((label) => (
+                          <span key={label}>{label}</span>
+                        ))}
+                      </div>
                     </div>
                   </section>
 
@@ -369,9 +562,9 @@ function App() {
                         <p className="card-subtitle">Current flow of disease investigations, treatment follow-ups, and flock review actions.</p>
                       </div>
                     </div>
-                    <div className="operations-grid">
-                      <div className="risk-list">
-                        {workflowRows.map((item) => (
+                      <div className="operations-grid">
+                        <div className="risk-list">
+                        {(dashboardData?.workflow_rows ?? workflowRows).map((item) => (
                           <div key={item.label} className="risk-row">
                             <span>{item.label}</span>
                             <span>{item.value}</span>
@@ -380,7 +573,7 @@ function App() {
                       </div>
 
                       <div className="insight-list">
-                        {insightRows.map((item) => (
+                        {(dashboardData?.insight_rows ?? insightRows).map((item) => (
                           <article key={item.title} className="insight-item">
                             <strong>{item.title}</strong>
                             <span>{item.meta}</span>
@@ -390,50 +583,73 @@ function App() {
                     </div>
                   </section>
                 </section>
-
-              <PredictionWorkspace
-                selectedImages={selectedImages}
-                loading={loading}
-                error={error}
-                results={results}
-                modelReady={modelReady}
-                mode="dashboard"
-                onFileChange={handleFileChange}
-                onSubmit={handleSubmit}
-                onResetResult={handleResetPrediction}
-                onRefreshStatus={() => checkStatus()}
-              />
             </div>
-          )
           ) : activePage === 'Flocks' ? (
             <FlocksPage />
           ) : activePage === 'Cases' ? (
             <CasesPage />
           ) : activePage === 'Predict Disease' ? (
             <section className="page-layout">
-              <div className="page-header">
-                <div>
-                  <p className="section-kicker">Prediction workspace</p>
-                  <h1 className="dashboard-title">Predict Disease</h1>
-                  <p className="dashboard-desc">
-                    Upload a chicken droppings image or take a fresh photo on mobile to screen for broiler disease signs.
-                  </p>
+              {results.length === 0 && (
+                <div className="page-header">
+                  <div>
+                    <h1 className="dashboard-title">Predict Disease</h1>
+                  </div>
                 </div>
-              </div>
+              )}
 
               <PredictionWorkspace
                 selectedImages={selectedImages}
                 loading={loading}
                 error={error}
                 results={results}
+                uploadingImages={uploadingImages}
+                uploadProgress={uploadProgress}
                 modelReady={modelReady}
                 mode="page"
+                selectedFlock={selectedPredictionFlock}
+                flockOptions={predictionFlockOptions}
                 onFileChange={handleFileChange}
+                onAppendImages={appendImages}
+                onFlockChange={setSelectedPredictionFlock}
+                onClearImages={() => {
+                  setSelectedImages((current) => {
+                    current.forEach((image) => URL.revokeObjectURL(image.preview))
+                    return []
+                  })
+                  setResults([])
+                  setError(null)
+                }}
+                onRemoveImage={(imageToRemove) => {
+                  setSelectedImages((current) => {
+                    const nextImages = current.filter(
+                      (image) =>
+                        !(
+                          image.file.name === imageToRemove.file.name &&
+                          image.file.lastModified === imageToRemove.file.lastModified &&
+                          image.file.size === imageToRemove.file.size
+                        ),
+                    )
+
+                    if (nextImages.length !== current.length) {
+                      URL.revokeObjectURL(imageToRemove.preview)
+                    }
+
+                    return nextImages
+                  })
+                  setResults((current) => current.filter((item) => item.preview !== imageToRemove.preview))
+                }}
                 onSubmit={handleSubmit}
                 onResetResult={handleResetPrediction}
                 onRefreshStatus={() => checkStatus()}
               />
             </section>
+          ) : activePage === 'Modelling' ? (
+            <ModellingPage />
+          ) : activePage === 'Reports' ? (
+            <ReportsPage />
+          ) : activePage === 'Settings' ? (
+            <SettingsPage />
           ) : (
             <section className="page-layout">
               <div className="page-header">
@@ -458,9 +674,17 @@ function PredictionWorkspace({
   loading,
   error,
   results,
+  uploadingImages,
+  uploadProgress,
   modelReady,
   mode,
+  selectedFlock,
+  flockOptions,
   onFileChange,
+  onAppendImages,
+  onFlockChange,
+  onClearImages,
+  onRemoveImage,
   onSubmit,
   onResetResult,
   onRefreshStatus,
@@ -469,57 +693,198 @@ function PredictionWorkspace({
   loading: boolean
   error: string | null
   results: PredictionResultItem[]
+  uploadingImages: boolean
+  uploadProgress: number
   modelReady: boolean | null
   mode: 'dashboard' | 'page'
+  selectedFlock: string
+  flockOptions: string[]
   onFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onAppendImages: (files: File[]) => void
+  onFlockChange: (value: string) => void
+  onClearImages: () => void
+  onRemoveImage: (image: SelectedImage) => void
   onSubmit: (e: React.FormEvent) => void
   onResetResult: () => void
   onRefreshStatus: () => void
 }) {
   const uploadInputRef = useRef<HTMLInputElement | null>(null)
-  const cameraInputRef = useRef<HTMLInputElement | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   const isStandalone = mode === 'page'
   const hasStandaloneResult = isStandalone && results.length > 0
   const latestResult = results[0]?.prediction ?? null
+  const diseaseSummary = summarizeDetectedDiseases(results)
+  const dominantDisease = diseaseSummary[0]
+  const averageConfidence = results.length
+    ? Math.round(results.reduce((total, item) => total + item.prediction.confidence, 0) / results.length)
+    : 0
+  const reportRows = buildReportRows(results, selectedFlock)
+  const predictionBlockers = [
+    !selectedImages.length ? 'Upload at least one droppings image.' : null,
+    !selectedFlock ? 'Select the batch for these samples.' : null,
+    modelReady === false ? 'Choose an active trained model in Modelling configurations.' : null,
+  ].filter((item): item is string => Boolean(item))
+  const predictionBlockerNotice =
+    predictionBlockers.length > 0 && !loading
+      ? `Prediction is unavailable: ${predictionBlockers.join(' ')}`
+      : null
+  const [activePreview, setActivePreview] = useState<string | null>(null)
+  const [imagePendingDelete, setImagePendingDelete] = useState<SelectedImage | null>(null)
+  const [toast, setToast] = useState<PredictToast | null>(null)
+  const [cameraOpen, setCameraOpen] = useState(false)
+  const [cameraError, setCameraError] = useState<string | null>(null)
+  const [captureNote, setCaptureNote] = useState<string | null>(null)
+  const [cameraReady, setCameraReady] = useState(false)
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null)
 
-  const handleDownloadResult = () => {
-    if (!results.length) return
+  useEffect(() => {
+    if (!cameraOpen) return
 
-    const payload = {
-      exported_at: new Date().toISOString(),
-      total_images: results.length,
-      results: results.map((item) => ({
-        file_name: item.fileName,
-        disease: item.prediction.disease,
-        confidence: item.prediction.confidence,
-        low_confidence: item.prediction.low_confidence,
-        message: item.prediction.message,
-        probabilities: item.prediction.probabilities,
-      })),
+    let cancelled = false
+
+    const startCamera = async () => {
+      setCameraError(null)
+      setCaptureNote(null)
+      setCameraReady(false)
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false,
+        })
+
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop())
+          return
+        }
+
+        setCameraStream(stream)
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+          await videoRef.current.play().catch(() => undefined)
+        }
+      } catch {
+        setCameraError('Camera access failed. Allow camera permission or use Upload images instead.')
+      }
     }
 
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'disease-prediction-results.json'
-    link.click()
-    URL.revokeObjectURL(url)
+    startCamera()
+
+    return () => {
+      cancelled = true
+    }
+  }, [cameraOpen])
+
+  useEffect(() => {
+    if (!videoRef.current || !cameraStream) return
+
+    videoRef.current.srcObject = cameraStream
+    videoRef.current.play().catch(() => undefined)
+  }, [cameraStream])
+
+  useEffect(() => {
+    if (!toast) return
+
+    const timer = window.setTimeout(() => setToast(null), 3200)
+    return () => window.clearTimeout(timer)
+  }, [toast])
+
+  const stopCamera = () => {
+    cameraStream?.getTracks().forEach((track) => track.stop())
+    setCameraStream(null)
+    setCameraReady(false)
+    setCameraOpen(false)
+    setCaptureNote(null)
+  }
+
+  const handleCapture = async () => {
+    const video = videoRef.current
+    if (!video || !video.videoWidth || !video.videoHeight) return
+
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const context = canvas.getContext('2d')
+
+    if (!context) return
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, 'image/jpeg', 0.92)
+    })
+
+    if (!blob) {
+      setCameraError('Could not capture the image. Please try again.')
+      return
+    }
+
+    const file = new File([blob], `droppings-capture-${Date.now()}.jpg`, { type: 'image/jpeg' })
+    onAppendImages([file])
+    setCaptureNote('Picture added. You can take another one or close the camera.')
+  }
+
+  const handleDeleteImage = () => {
+    if (!imagePendingDelete) return
+
+    onRemoveImage(imagePendingDelete)
+    if (activePreview === imagePendingDelete.preview) {
+      setActivePreview(null)
+    }
+    setImagePendingDelete(null)
+    setToast({ text: 'Image removed from the batch.', tone: 'success' })
+  }
+
+  const handleDownloadResult = async () => {
+    if (!results.length) return
+
+    try {
+      const response = await fetch(`${API_BASE}/report-excel`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ rows: reportRows }),
+      })
+
+      if (!response.ok) {
+        setToast({ text: 'Could not generate the Excel report.', tone: 'error' })
+        return
+      }
+
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'Broiler_Disease_Report.xlsx'
+      link.click()
+      URL.revokeObjectURL(url)
+      setToast({ text: 'Excel report downloaded.', tone: 'success' })
+    } catch {
+      setToast({ text: 'Could not reach the server for report download.', tone: 'error' })
+    }
   }
 
   if (hasStandaloneResult) {
     return (
       <section className="upload-layout predict-page-layout">
-        <section className="chart-card predict-result-page">
-          <div className="predict-result-header">
-            <button type="button" className="ghost-btn predict-back-btn" onClick={onResetResult}>
-              Back
+        <div className="page-header predict-page-topbar">
+          <div>
+            <h1 className="dashboard-title">Results Page</h1>
+          </div>
+          <div className="predict-page-actions-row">
+            <button type="button" className="settings-btn predict-back-to-uploads-btn" onClick={onResetResult}>
+              <ButtonIcon name="back" />
+              Back to uploads
             </button>
             <button type="button" className="primary-btn predict-download-btn" onClick={handleDownloadResult}>
+              <ButtonIcon name="download" />
               Download result
             </button>
           </div>
+        </div>
 
+        <section className="chart-card predict-result-page">
           <div className="predict-result-grid">
             <article className="prediction-panel prediction-panel-standalone prediction-results-list">
               {results.map((item) => (
@@ -549,12 +914,38 @@ function PredictionWorkspace({
             </article>
 
             <article className="chart-card predict-result-summary-card">
-              <div className="chart-title">What to do next</div>
-              <div className="predict-guidance-list">
-                <span>{results.length} sample{results.length > 1 ? 's' : ''} screened in this batch.</span>
-                <span>Review the confidence score together with flock symptoms.</span>
-                <span>Create a case if the result needs follow-up or confirmation.</span>
-                <span>Keep the downloaded result for reporting or handover.</span>
+              <div className="chart-title">Broiler Disease Detection Report</div>
+              <div className="predict-report-stack">
+                <section className="predict-report-block">
+                  <div className="predict-report-label">Batch summary</div>
+                  <div className="predict-guidance-list">
+                    <span>Flock / batch: {selectedFlock || 'Not specified'}.</span>
+                    <span>{results.length} sample{results.length > 1 ? 's' : ''} screened in this batch.</span>
+                    <span>Average model confidence: {averageConfidence}%.</span>
+                    <span>
+                      Most frequent detection: {dominantDisease ? `${dominantDisease.disease} (${dominantDisease.count})` : 'No dominant class yet'}.
+                    </span>
+                  </div>
+                </section>
+
+                <section className="predict-report-block">
+                  <div className="predict-report-label">Detailed report</div>
+                  <div className="predict-disease-summary-list">
+                    {reportRows.map((row) => (
+                      <article key={row.caseId} className="predict-disease-summary-item">
+                        <div className="predict-report-item-head">
+                          <strong>{row.disease}</strong>
+                          <span>{row.confidence}% confidence</span>
+                        </div>
+                        <span>Case ID: {row.caseId}</span>
+                        <span>Flock: {row.flock}</span>
+                        <span>Date: {row.date}</span>
+                        <span>Status: {row.status}</span>
+                        <span>Recommendation: {row.recommendation}</span>
+                      </article>
+                    ))}
+                  </div>
+                </section>
               </div>
             </article>
           </div>
@@ -565,75 +956,89 @@ function PredictionWorkspace({
 
   return (
     <section className={`upload-layout ${isStandalone ? 'predict-page-layout' : ''}`}>
+      {toast && (
+        <div className="toast-stack predict-toast-stack">
+          <div className={`toast-notice ${toast.tone === 'success' ? 'toast-success' : 'toast-error'}`}>
+            <span>{toast.text}</span>
+            <button type="button" className="toast-close" onClick={() => setToast(null)}>
+              X
+            </button>
+          </div>
+        </div>
+      )}
       <section className="chart-card upload-feature">
         <div className="card-head">
           <div>
-            <div className="chart-title">{isStandalone ? 'Prediction Workspace' : 'Upload Droppings Image'}</div>
-            <p className="card-subtitle">
-              {isStandalone
-                ? 'Upload a droppings image and run prediction.'
-                : 'Upload a droppings image or take a live photo to predict the disease affecting the flock.'}
-            </p>
+            {isStandalone ? (
+              <>
+                <div className="chart-title">Prediction Workspace</div>
+                <p className="card-subtitle">Upload a droppings image and run prediction.</p>
+              </>
+            ) : null}
           </div>
           <span className={`chip ${modelReady ? '' : 'neutral'}`}>{modelReady ? 'AI screening' : 'Model offline'}</span>
         </div>
 
         <div className="upload-feature-grid">
           <form onSubmit={onSubmit} className="predict-form">
+            <div className="predict-context-row">
+              <label className="predict-context-field">
+                <span>Batch / flock</span>
+                <select value={selectedFlock} onChange={(e) => onFlockChange(e.target.value)}>
+                  <option value="">Select flock or batch</option>
+                  {flockOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
             <div className="upload-dropzone">
               <input ref={uploadInputRef} className="visually-hidden-input" type="file" accept="image/*" multiple onChange={onFileChange} />
-              <input
-                ref={cameraInputRef}
-                className="visually-hidden-input"
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={onFileChange}
-              />
-              {selectedImages.length ? (
-                <div className="preview-gallery">
-                  {selectedImages.map((image) => (
-                    <div key={`${image.file.name}-${image.file.lastModified}`} className="preview-gallery-item">
-                      <img src={image.preview} alt={image.file.name} className="preview-image" />
-                      <span>{image.file.name}</span>
-                    </div>
-                  ))}
+              <div className="upload-placeholder">
+                <strong>{isStandalone ? 'Upload many droppings images or take fresh pictures' : 'Upload or capture droppings images'}</strong>
+                <span>
+                  {selectedImages.length
+                    ? `${selectedImages.length} image${selectedImages.length > 1 ? 's' : ''} added to this batch.`
+                    : 'PNG, JPG, and JPEG are supported. You can choose multiple sample images in one batch.'}
+                </span>
+                <div className="upload-option-row">
+                  <button
+                    type="button"
+                    className="upload-option-pill upload-option-pill-upload"
+                    onClick={() => uploadInputRef.current?.click()}
+                    disabled={uploadingImages}
+                  >
+                    <UploadActionIcon name="upload" />
+                    {uploadingImages ? `Uploading ${uploadProgress}%` : 'Upload images'}
+                  </button>
+                  <button
+                    type="button"
+                    className="upload-option-pill upload-option-pill-camera"
+                    onClick={() => setCameraOpen(true)}
+                  >
+                    <UploadActionIcon name="camera" />
+                    Use camera
+                  </button>
                 </div>
-              ) : (
-                <div className="upload-placeholder">
-                  <strong>{isStandalone ? 'Upload many droppings images or take fresh pictures' : 'Upload or capture droppings images'}</strong>
-                  <span>PNG, JPG, and JPEG are supported. You can choose multiple sample images in one batch.</span>
-                  <div className="upload-option-row">
-                    <button
-                      type="button"
-                      className="upload-option-pill upload-option-pill-upload"
-                      onClick={() => uploadInputRef.current?.click()}
-                    >
-                      <UploadActionIcon name="upload" />
-                      Upload images
-                    </button>
-                    <button
-                      type="button"
-                      className="upload-option-pill upload-option-pill-camera"
-                      onClick={() => cameraInputRef.current?.click()}
-                    >
-                      <UploadActionIcon name="camera" />
-                      Use camera
-                    </button>
-                  </div>
-                </div>
-              )}
+              </div>
             </div>
 
-            <div className="predict-actions">
-              <button type="submit" className="primary-btn" disabled={!selectedImages.length || loading || !modelReady}>
-                {loading ? 'Analyzing...' : `Run prediction${selectedImages.length > 1 ? 's' : ''}`}
-              </button>
-              <button type="button" className="ghost-btn" onClick={onRefreshStatus}>
-                Refresh status
-              </button>
-            </div>
+              <div className="predict-actions">
+                <button type="submit" className="primary-btn" disabled={!selectedImages.length || loading || !modelReady}>
+                  {loading ? 'Analyzing...' : `Run prediction${selectedImages.length > 1 ? 's' : ''}`}
+                </button>
+                <button type="button" className="ghost-btn" onClick={onRefreshStatus}>
+                  Refresh status
+                </button>
+                <button type="button" className="ghost-btn predict-clear-btn" onClick={onClearImages} disabled={!selectedImages.length || loading}>
+                  Clear uploads
+                </button>
+              </div>
 
+            {predictionBlockerNotice && <p className="predict-notice">{predictionBlockerNotice}</p>}
             {error && <p className="inline-error">{error}</p>}
 
             {isStandalone && (
@@ -667,12 +1072,24 @@ function PredictionWorkspace({
             {!latestResult && selectedImages.length > 0 && (
               <div className="prediction-preview-strip">
                 {selectedImages.map((image) => (
-                  <img
-                    key={`${image.file.name}-${image.file.lastModified}`}
-                    src={image.preview}
-                    alt={image.file.name}
-                    className="prediction-preview-thumb"
-                  />
+                  <div key={`${image.file.name}-${image.file.lastModified}`} className="prediction-preview-card">
+                    <button
+                      type="button"
+                      className="prediction-preview-button"
+                      onClick={() => setActivePreview(image.preview)}
+                      aria-label={`Preview ${image.file.name}`}
+                    >
+                      <img src={image.preview} alt={image.file.name} className="prediction-preview-thumb" />
+                    </button>
+                    <button
+                      type="button"
+                      className="prediction-preview-delete"
+                      onClick={() => setImagePendingDelete(image)}
+                      aria-label={`Delete ${image.file.name}`}
+                    >
+                      <DeleteIcon />
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -690,6 +1107,89 @@ function PredictionWorkspace({
           </div>
         </div>
       </section>
+
+      {cameraOpen && (
+        <div className="modal-backdrop" onClick={stopCamera}>
+          <section className="modal-card modal-card-small camera-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-body camera-modal-body">
+              <div className="camera-modal-topbar">
+                <button type="button" className="modal-close camera-close-btn" onClick={stopCamera}>
+                  X
+                </button>
+              </div>
+              <div className="camera-frame">
+                {cameraError ? (
+                  <div className="camera-empty-state">{cameraError}</div>
+                ) : (
+                  <video
+                    ref={videoRef}
+                    className={`camera-video ${cameraReady ? 'is-ready' : ''}`}
+                    muted
+                    playsInline
+                    onLoadedMetadata={() => setCameraReady(true)}
+                  />
+                )}
+              </div>
+              <div className="camera-capture-bar">
+                <button
+                  type="button"
+                  className="camera-capture-btn"
+                  onClick={handleCapture}
+                  disabled={!cameraReady || Boolean(cameraError)}
+                  aria-label="Capture picture"
+                />
+              </div>
+              {captureNote && <p className="camera-note">{captureNote}</p>}
+            </div>
+
+            <div className="modal-actions">
+              <button type="button" className="ghost-btn modal-btn" onClick={stopCamera}>
+                Close
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {activePreview && (
+        <div className="modal-backdrop" onClick={() => setActivePreview(null)}>
+          <section className="modal-card modal-card-small image-preview-modal" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="modal-close image-preview-close" onClick={() => setActivePreview(null)}>
+              X
+            </button>
+            <div className="image-preview-body">
+              <img src={activePreview} alt="Selected preview" className="image-preview-full" />
+            </div>
+          </section>
+        </div>
+      )}
+
+      {imagePendingDelete && (
+        <div className="modal-backdrop" onClick={() => setImagePendingDelete(null)}>
+          <section className="modal-card modal-card-small" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h2>Delete image</h2>
+                <p>This will remove the selected sample from the prediction batch.</p>
+              </div>
+              <button type="button" className="modal-close" onClick={() => setImagePendingDelete(null)}>
+                X
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="modal-copy">{imagePendingDelete.file.name}</p>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="ghost-btn modal-btn" onClick={() => setImagePendingDelete(null)}>
+                Cancel
+              </button>
+              <button type="button" className="primary-btn modal-btn danger-solid-btn" onClick={handleDeleteImage}>
+                Delete
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </section>
   )
 }
@@ -707,105 +1207,199 @@ function UploadActionIcon({ name }: { name: 'upload' | 'camera' }) {
   )
 }
 
-function DashboardSkeleton() {
+function LoginScreen({
+  username,
+  password,
+  error,
+  onUsernameChange,
+  onPasswordChange,
+  onSubmit,
+}: {
+  username: string
+  password: string
+  error: string
+  onUsernameChange: (value: string) => void
+  onPasswordChange: (value: string) => void
+  onSubmit: (event: React.FormEvent) => void
+}) {
   return (
-    <div className="dashboard-overview dashboard-skeleton" aria-hidden="true">
-      <section className="dashboard-hero">
-        <div className="hero-card skeleton-card">
-          <div className="skeleton-line skeleton-line-sm" />
-          <div className="skeleton-line skeleton-line-lg" />
-          <div className="skeleton-line skeleton-line-md" />
-          <div className="skeleton-chip-row">
-            <span className="skeleton-chip" />
-            <span className="skeleton-chip" />
-            <span className="skeleton-chip" />
+    <main className="login-shell">
+      <section className="login-showcase" />
+
+      <section className="login-panel">
+        <div className="login-panel-inner">
+          <div className="login-brand">
+            <img className="login-brand-logo" src={loginLogoImage} alt="Broiler disease system logo" />
           </div>
-        </div>
 
-        <div className="hero-side-card skeleton-card">
-          <div className="skeleton-stat-block">
-            <div className="skeleton-line skeleton-line-sm" />
-            <div className="skeleton-line skeleton-line-md" />
-          </div>
-          <div className="skeleton-stat-block">
-            <div className="skeleton-line skeleton-line-sm" />
-            <div className="skeleton-line skeleton-line-md" />
-          </div>
-          <div className="skeleton-button" />
-        </div>
-      </section>
+          <form className="login-form" onSubmit={onSubmit}>
+            <p className="login-welcome">Welcome back, good to see you again!</p>
 
-      <section className="dashboard-cards metric-strip">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <article key={index} className="dashboard-card skeleton-card">
-            <div className="skeleton-line skeleton-line-sm" />
-            <div className="skeleton-line skeleton-line-md" />
-            <div className="skeleton-line skeleton-line-sm" />
-          </article>
-        ))}
-      </section>
+            <label className="login-field">
+              <span>Username</span>
+              <input value={username} onChange={(event) => onUsernameChange(event.target.value)} placeholder="Enter your username" />
+            </label>
 
-      <section className="dashboard-mosaic">
-        <section className="chart-card skeleton-card">
-          <div className="skeleton-line skeleton-line-sm" />
-          <div className="skeleton-line skeleton-line-md" />
-          <div className="skeleton-chart" />
-        </section>
+            <label className="login-field">
+              <span>Password</span>
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => onPasswordChange(event.target.value)}
+                placeholder="Enter your password"
+              />
+            </label>
 
-        <div className="side-stack">
-          <section className="chart-card skeleton-card">
-            <div className="skeleton-line skeleton-line-sm" />
-            <div className="skeleton-stat-stack">
-              <div className="skeleton-line skeleton-line-md" />
-              <div className="skeleton-line skeleton-line-md" />
-              <div className="skeleton-line skeleton-line-md" />
-            </div>
-          </section>
+            {error ? <p className="login-error">{error}</p> : null}
 
-          <section className="chart-card skeleton-card">
-            <div className="skeleton-line skeleton-line-sm" />
-            <div className="skeleton-chart skeleton-chart-sm" />
-          </section>
+            <button type="submit" className="login-submit-btn">
+              Log In
+            </button>
+          </form>
         </div>
       </section>
-
-      <section className="dashboard-bottom">
-        <section className="chart-card skeleton-card">
-          <div className="skeleton-line skeleton-line-sm" />
-          <div className="skeleton-line skeleton-line-md" />
-          <div className="skeleton-chart" />
-        </section>
-
-        <section className="chart-card skeleton-card">
-          <div className="skeleton-line skeleton-line-sm" />
-          <div className="skeleton-list">
-            {Array.from({ length: 5 }).map((_, index) => (
-              <div key={index} className="skeleton-list-row" />
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="upload-layout">
-        <section className="chart-card skeleton-card">
-          <div className="skeleton-line skeleton-line-sm" />
-          <div className="skeleton-line skeleton-line-md" />
-          <div className="upload-feature-grid">
-            <div className="skeleton-upload" />
-            <div className="skeleton-panel" />
-          </div>
-        </section>
-      </section>
-    </div>
+    </main>
   )
 }
 
-function iconGlyph(name: string) {
+function DeleteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 7h16M9 7V5h6v2M8 7l1 12h6l1-12M10 11v5M14 11v5" />
+    </svg>
+  )
+}
+
+function ButtonIcon({ name }: { name: 'back' | 'download' }) {
+  const paths: Record<'back' | 'download', string> = {
+    back: 'M15 6l-6 6 6 6M9 12h10',
+    download: 'M12 4v10M8 10l4 4 4-4M5 18h14',
+  }
+
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d={paths[name]} />
+    </svg>
+  )
+}
+
+function summarizeDetectedDiseases(results: PredictionResultItem[]): DiseaseSummary[] {
+  const summaryMap = new Map<string, DiseaseSummary>()
+
+  results.forEach((item) => {
+    const current = summaryMap.get(item.prediction.disease)
+    if (current) {
+      current.count += 1
+      current.highestConfidence = Math.max(current.highestConfidence, item.prediction.confidence)
+      return
+    }
+
+    summaryMap.set(item.prediction.disease, {
+      disease: item.prediction.disease,
+      count: 1,
+      highestConfidence: item.prediction.confidence,
+    })
+  })
+
+  return Array.from(summaryMap.values()).sort((a, b) => {
+    if (b.count !== a.count) return b.count - a.count
+    return b.highestConfidence - a.highestConfidence
+  })
+}
+
+function buildReportRows(results: PredictionResultItem[], flock: string): ReportRow[] {
+  const today = new Date().toISOString().slice(0, 10)
+
+  return results.map((item, index) => {
+    const disease = formatDiseaseName(item.prediction.disease)
+    const confidence = Math.round(item.prediction.confidence)
+    return {
+      caseId: `C${String(index + 1).padStart(3, '0')}`,
+      flock: flock || 'Unassigned flock',
+      date: today,
+      disease,
+      confidence,
+      status: getReportStatus(item.prediction.disease, confidence),
+      recommendation: getReportRecommendation(item.prediction.disease, confidence),
+    }
+  })
+}
+
+function formatDiseaseName(disease: string) {
+  const map: Record<string, string> = {
+    cocci: 'Coccidiosis',
+    healthy: 'Healthy',
+    ncd: 'Newcastle Disease',
+    salmo: 'Salmonella',
+  }
+
+  return map[disease.toLowerCase()] ?? disease
+}
+
+function buildPolylinePoints(values: number[], baseline = 210, peak = 55) {
+  const maxValue = Math.max(...values, 1)
+  const step = values.length > 1 ? 560 / (values.length - 1) : 0
+
+  return values
+    .map((value, index) => {
+      const x = 20 + step * index
+      const y = baseline - ((baseline - peak) * value) / maxValue
+      return `${Math.round(x)},${Math.round(y)}`
+    })
+    .join(' ')
+}
+
+function getReportStatus(disease: string, confidence: number) {
+  const key = disease.toLowerCase()
+  if (key === 'healthy') return 'Healthy'
+  if (confidence >= 85) return 'High Risk'
+  if (confidence >= 70) return 'Medium Risk'
+  return 'Low Risk'
+}
+
+function getReportRecommendation(disease: string, confidence: number) {
+  const key = disease.toLowerCase()
+
+  if (key === 'healthy') {
+    return confidence >= 85 ? 'Continue normal care' : 'No action required'
+  }
+
+  if (key === 'cocci') {
+    return confidence >= 85 ? 'Start treatment immediately' : 'Monitor flock and confirm with vet review'
+  }
+
+  if (key === 'salmo') {
+    return 'Monitor and isolate birds'
+  }
+
+  if (key === 'ncd') {
+    return confidence >= 85 ? 'Emergency intervention' : 'Isolate flock and arrange urgent review'
+  }
+
+  return 'Review and confirm the result with field assessment'
+}
+
+function renderDashboardCardIcon(name: string) {
+  if (name === 'scan') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M5 6h14v12H5zM8 10l2.2 2.2 2.4-3.2L17 15H7z" />
+        <circle cx="9" cy="9" r="1.2" />
+      </svg>
+    )
+  }
+
+  if (name === 'ai') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 20s-6-3.8-6-9a3.5 3.5 0 0 1 6-2.2A3.5 3.5 0 0 1 18 11c0 5.2-6 9-6 9Z" />
+      </svg>
+    )
+  }
+
   const glyphs: Record<string, string> = {
-    scan: '$',
     alert: '!',
     case: '#',
-    ai: 'AI',
   }
 
   return glyphs[name] ?? '*'
@@ -815,11 +1409,13 @@ function Icon({ name }: { name: string }) {
   const paths: Record<string, string> = {
     grid: 'M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6z',
     barn: 'M4 10 12 4l8 6v10h-5v-5H9v5H4z',
+    chicken: 'M7.8 13.6c0-3.1 2.2-5.3 5.3-5.3 1.2 0 2.4.3 3.4 1l1.4-.8-.4 1.5 1 1-1.4.4c.2.5.3 1 .3 1.6 0 2.8-2.2 4.9-5.2 4.9h-2l-1.2 2.1-.7-2.1H7.8c-1 0-1.8-.8-1.8-1.8 0-.9.7-1.6 1.6-1.8Zm6-7.1.8-1.5 1 1.1 1.2-.6v1.3l1.4.1-.9 1.2m-5.6 1.4c.5-.8 1.3-1.2 2.3-1.2.7 0 1.4.2 2 .7l-1 .6-.4 1-.8-.5-.8.4Z',
     alert: 'M12 3 2 21h20L12 3zm0 6v5m0 4h.01',
     pulse: 'M3 12h4l2-4 4 8 2-4h6',
     model: 'M4 7h16M4 12h16M4 17h10',
     report: 'M6 3h9l3 3v15H6zM9 12h6M9 16h6M9 8h3',
     gear: 'M12 8.5A3.5 3.5 0 1 0 12 15.5 3.5 3.5 0 0 0 12 8.5zm8 3-1.7-.3a6.8 6.8 0 0 0-.7-1.6l1-1.4-1.9-1.9-1.4 1a6.8 6.8 0 0 0-1.6-.7L12.5 4h-1l-.3 1.7a6.8 6.8 0 0 0-1.6.7l-1.4-1-1.9 1.9 1 1.4a6.8 6.8 0 0 0-.7 1.6L4 11.5v1l1.7.3a6.8 6.8 0 0 0 .7 1.6l-1 1.4 1.9 1.9 1.4-1a6.8 6.8 0 0 0 1.6.7l.3 1.7h1l.3-1.7a6.8 6.8 0 0 0 1.6-.7l1.4 1 1.9-1.9-1-1.4a6.8 6.8 0 0 0 .7-1.6l1.7-.3z',
+    logout: 'M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l4-4-4-4M14 12H4',
   }
 
   return (

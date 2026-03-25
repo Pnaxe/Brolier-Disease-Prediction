@@ -22,10 +22,14 @@ except ImportError as exc:
         "`python -m pip install -r requirements.txt` inside `server/`."
     ) from exc
 
-DATASET_PATH = r"C:\Users\USER\Pictures\Final Project\poultry_diseases"
-MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "poultry_model.keras")
+DATASET_PATH = os.environ.get("DATASET_PATH_OVERRIDE", r"C:\Users\USER\Pictures\Final Project\poultry_diseases")
+MODEL_PATH = os.environ.get(
+    "MODEL_OUTPUT_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "poultry_model.keras"),
+)
 img_size = 224
 batch_size = 16
+epochs = 60
 
 if not os.path.exists(DATASET_PATH):
     print(f"Dataset not found: {DATASET_PATH}")
@@ -89,10 +93,43 @@ total = sum(counts.values())
 class_weights = {class_names.index(n): total / (len(class_names) * max(cnt, 1)) for n, cnt in counts.items()}
 
 print("Training... (20-40 min)")
+print(
+    f"TRAIN_PROGRESS|phase=prepare|epoch=0|total={epochs}|progress=0|train_acc=0|val_acc=0|train_loss=0|val_loss=0",
+    flush=True,
+)
+
+
+class ProgressLogger(tf.keras.callbacks.Callback):
+    def __init__(self, total_epochs):
+        super().__init__()
+        self.total_epochs = total_epochs
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        completed_epoch = epoch + 1
+        progress = round((completed_epoch / self.total_epochs) * 100, 1)
+        train_acc = round(float(logs.get("accuracy", 0.0)) * 100, 1)
+        val_acc = round(float(logs.get("val_accuracy", 0.0)) * 100, 1)
+        train_loss = round(float(logs.get("loss", 0.0)), 4)
+        val_loss = round(float(logs.get("val_loss", 0.0)), 4)
+        print(
+            "TRAIN_PROGRESS|"
+            f"phase=training|epoch={completed_epoch}|total={self.total_epochs}|progress={progress}|"
+            f"train_acc={train_acc}|val_acc={val_acc}|train_loss={train_loss}|val_loss={val_loss}",
+            flush=True,
+        )
+
+
 cb = [
+    ProgressLogger(epochs),
     tf.keras.callbacks.EarlyStopping(monitor="val_accuracy", patience=10, restore_best_weights=True),
     tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=4, min_lr=1e-6),
 ]
-model.fit(train_ds, validation_data=val_ds, epochs=60, callbacks=cb, class_weight=class_weights, verbose=1)
+model.fit(train_ds, validation_data=val_ds, epochs=epochs, callbacks=cb, class_weight=class_weights, verbose=1)
 model.save(MODEL_PATH)
-print(f"Model saved to {MODEL_PATH}")
+print(
+    f"TRAIN_PROGRESS|phase=complete|epoch={epochs}|total={epochs}|progress=100|"
+    "train_acc=0|val_acc=0|train_loss=0|val_loss=0",
+    flush=True,
+)
+print(f"Model saved to {MODEL_PATH}", flush=True)
