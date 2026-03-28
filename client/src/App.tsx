@@ -22,14 +22,18 @@ interface Prediction {
   probabilities: Record<string, number>
 }
 
-interface SelectedImage {
+type UploadKind = 'image' | 'video'
+
+interface SelectedUpload {
   file: File
   preview: string
+  kind: UploadKind
 }
 
 interface PredictionResultItem {
   fileName: string
   preview: string
+  kind: UploadKind
   prediction: Prediction
 }
 
@@ -152,12 +156,21 @@ const predictionFlockOptions = [
   'Starter Pen 2',
 ]
 
+const IMAGE_FILE_PREFIX = 'image/'
+const VIDEO_FILE_PREFIX = 'video/'
+
+function getUploadKind(file: File): UploadKind | null {
+  if (file.type.startsWith(IMAGE_FILE_PREFIX)) return 'image'
+  if (file.type.startsWith(VIDEO_FILE_PREFIX)) return 'video'
+  return null
+}
+
   function App() {
     const [isAuthenticated, setIsAuthenticated] = useState(() => localStorage.getItem(AUTH_STORAGE_KEY) === 'true')
   const [loginUsername, setLoginUsername] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
   const [loginError, setLoginError] = useState('')
-  const [selectedImages, setSelectedImages] = useState<SelectedImage[]>([])
+  const [selectedImages, setSelectedImages] = useState<SelectedUpload[]>([])
   const [results, setResults] = useState<PredictionResultItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -189,7 +202,7 @@ const predictionFlockOptions = [
     localStorage.setItem(ACTIVE_PAGE_STORAGE_KEY, activePage)
   }, [activePage, isAuthenticated])
 
-  const selectedImagesRef = useRef<SelectedImage[]>([])
+  const selectedImagesRef = useRef<SelectedUpload[]>([])
 
   useEffect(() => {
     selectedImagesRef.current = selectedImages
@@ -238,8 +251,8 @@ const predictionFlockOptions = [
   const appendImages = (pickedFiles: File[]) => {
     if (!pickedFiles.length) return
 
-    if (pickedFiles.some((selected) => !selected.type.startsWith('image/'))) {
-      setError('Please select image files like PNG, JPG, or JPEG only.')
+    if (pickedFiles.some((selected) => getUploadKind(selected) === null)) {
+      setError('Please select image or video files only. Supported types include PNG, JPG, JPEG, MP4, MOV, and AVI.')
       return
     }
 
@@ -249,10 +262,12 @@ const predictionFlockOptions = [
 
       pickedFiles.forEach((file) => {
         const key = `${file.name}-${file.lastModified}-${file.size}`
+        const kind = getUploadKind(file)
         if (!existingKeys.has(key)) {
           nextImages.push({
             file,
             preview: URL.createObjectURL(file),
+            kind: kind ?? 'image',
           })
           existingKeys.add(key)
         }
@@ -298,6 +313,7 @@ const predictionFlockOptions = [
         nextResults.push({
           fileName: image.file.name,
           preview: image.preview,
+          kind: image.kind,
           prediction: data,
         })
       }
@@ -689,7 +705,7 @@ function PredictionWorkspace({
   onResetResult,
   onRefreshStatus,
 }: {
-  selectedImages: SelectedImage[]
+  selectedImages: SelectedUpload[]
   loading: boolean
   error: string | null
   results: PredictionResultItem[]
@@ -703,7 +719,7 @@ function PredictionWorkspace({
   onAppendImages: (files: File[]) => void
   onFlockChange: (value: string) => void
   onClearImages: () => void
-  onRemoveImage: (image: SelectedImage) => void
+  onRemoveImage: (image: SelectedUpload) => void
   onSubmit: (e: React.FormEvent) => void
   onResetResult: () => void
   onRefreshStatus: () => void
@@ -720,7 +736,7 @@ function PredictionWorkspace({
     : 0
   const reportRows = buildReportRows(results, selectedFlock)
   const predictionBlockers = [
-    !selectedImages.length ? 'Upload at least one droppings image.' : null,
+    !selectedImages.length ? 'Upload at least one droppings image or video.' : null,
     !selectedFlock ? 'Select the batch for these samples.' : null,
     modelReady === false ? 'Choose an active trained model in Modelling configurations.' : null,
   ].filter((item): item is string => Boolean(item))
@@ -729,7 +745,7 @@ function PredictionWorkspace({
       ? `Prediction is unavailable: ${predictionBlockers.join(' ')}`
       : null
   const [activePreview, setActivePreview] = useState<string | null>(null)
-  const [imagePendingDelete, setImagePendingDelete] = useState<SelectedImage | null>(null)
+  const [imagePendingDelete, setImagePendingDelete] = useState<SelectedUpload | null>(null)
   const [toast, setToast] = useState<PredictToast | null>(null)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
@@ -764,7 +780,7 @@ function PredictionWorkspace({
           await videoRef.current.play().catch(() => undefined)
         }
       } catch {
-        setCameraError('Camera access failed. Allow camera permission or use Upload images instead.')
+        setCameraError('Camera access failed. Allow camera permission or use file upload instead.')
       }
     }
 
@@ -832,7 +848,7 @@ function PredictionWorkspace({
       setActivePreview(null)
     }
     setImagePendingDelete(null)
-    setToast({ text: 'Image removed from the batch.', tone: 'success' })
+    setToast({ text: 'File removed from the batch.', tone: 'success' })
   }
 
   const handleDownloadResult = async () => {
@@ -889,11 +905,18 @@ function PredictionWorkspace({
             <article className="prediction-panel prediction-panel-standalone prediction-results-list">
               {results.map((item) => (
                 <section key={item.fileName} className="predict-result-item">
-                  <img src={item.preview} alt={item.fileName} className="predict-result-thumb" />
+                  {item.kind === 'video' ? (
+                    <video src={item.preview} className="predict-result-thumb" controls muted playsInline />
+                  ) : (
+                    <img src={item.preview} alt={item.fileName} className="predict-result-thumb" />
+                  )}
                   <div className="predict-result-content">
                     <div className="prediction-summary">
                       <strong>{item.prediction.disease}</strong>
-                      <span>{item.prediction.confidence}% confidence</span>
+                      <span>
+                        {item.prediction.confidence}% confidence
+                        {item.kind === 'video' ? ' from video frames' : ''}
+                      </span>
                     </div>
                     <div className="predict-result-file">{item.fileName}</div>
                     {item.prediction.message && <p className="prediction-message">{item.prediction.message}</p>}
@@ -972,7 +995,7 @@ function PredictionWorkspace({
             {isStandalone ? (
               <>
                 <div className="chart-title">Prediction Workspace</div>
-                <p className="card-subtitle">Upload a droppings image and run prediction.</p>
+                <p className="card-subtitle">Upload droppings images or videos and run prediction.</p>
               </>
             ) : null}
           </div>
@@ -996,13 +1019,20 @@ function PredictionWorkspace({
             </div>
 
             <div className="upload-dropzone">
-              <input ref={uploadInputRef} className="visually-hidden-input" type="file" accept="image/*" multiple onChange={onFileChange} />
+              <input
+                ref={uploadInputRef}
+                className="visually-hidden-input"
+                type="file"
+                accept="image/*,video/*"
+                multiple
+                onChange={onFileChange}
+              />
               <div className="upload-placeholder">
-                <strong>{isStandalone ? 'Upload many droppings images or take fresh pictures' : 'Upload or capture droppings images'}</strong>
+                <strong>{isStandalone ? 'Upload droppings images or short videos, or take fresh pictures' : 'Upload or capture droppings samples'}</strong>
                 <span>
                   {selectedImages.length
-                    ? `${selectedImages.length} image${selectedImages.length > 1 ? 's' : ''} added to this batch.`
-                    : 'PNG, JPG, and JPEG are supported. You can choose multiple sample images in one batch.'}
+                    ? `${selectedImages.length} file${selectedImages.length > 1 ? 's' : ''} added to this batch.`
+                    : 'PNG, JPG, JPEG, MP4, MOV, and AVI are supported. You can choose multiple sample files in one batch.'}
                 </span>
                 <div className="upload-option-row">
                   <button
@@ -1012,7 +1042,7 @@ function PredictionWorkspace({
                     disabled={uploadingImages}
                   >
                     <UploadActionIcon name="upload" />
-                    {uploadingImages ? `Uploading ${uploadProgress}%` : 'Upload images'}
+                    {uploadingImages ? `Uploading ${uploadProgress}%` : 'Upload files'}
                   </button>
                   <button
                     type="button"
@@ -1045,8 +1075,8 @@ function PredictionWorkspace({
               <div className="predict-instructions-card">
                 <div className="predict-guidance-title">Instructions</div>
                 <div className="predict-guidance-list">
-                  <span>Take clear photos of each chicken droppings sample.</span>
-                  <span>Each image should focus on one sample as much as possible.</span>
+                  <span>Take clear photos or short videos of each chicken droppings sample.</span>
+                  <span>Keep the sample centered so extracted video frames stay useful for the model.</span>
                   <span>Avoid blur, heavy shadows, and background clutter.</span>
                 </div>
               </div>
@@ -1055,19 +1085,19 @@ function PredictionWorkspace({
 
           <div className={`prediction-panel ${isStandalone ? 'prediction-panel-standalone' : ''}`}>
             <div className="prediction-summary">
-              <strong>{latestResult ? latestResult.disease : 'Preview images'}</strong>
+              <strong>{latestResult ? latestResult.disease : 'Preview files'}</strong>
               <span>
                 {latestResult
-                  ? `${latestResult.confidence}% confidence`
+                  ? `${latestResult.confidence}% confidence${results[0]?.kind === 'video' ? ' from video frames' : ''}`
                   : selectedImages.length
-                    ? `${selectedImages.length} image${selectedImages.length > 1 ? 's' : ''} selected`
-                    : 'No image analyzed yet'}
+                    ? `${selectedImages.length} file${selectedImages.length > 1 ? 's' : ''} selected`
+                    : 'No file analyzed yet'}
               </span>
             </div>
             {latestResult?.message ? (
               <p className="prediction-message">{latestResult.message}</p>
             ) : (
-              isStandalone && <p className="prediction-message">Review the uploaded droppings images here before running prediction.</p>
+              isStandalone && <p className="prediction-message">Review the uploaded droppings images or videos here before running prediction.</p>
             )}
             {!latestResult && selectedImages.length > 0 && (
               <div className="prediction-preview-strip">
@@ -1079,7 +1109,11 @@ function PredictionWorkspace({
                       onClick={() => setActivePreview(image.preview)}
                       aria-label={`Preview ${image.file.name}`}
                     >
-                      <img src={image.preview} alt={image.file.name} className="prediction-preview-thumb" />
+                      {image.kind === 'video' ? (
+                        <video src={image.preview} className="prediction-preview-thumb" muted playsInline />
+                      ) : (
+                        <img src={image.preview} alt={image.file.name} className="prediction-preview-thumb" />
+                      )}
                     </button>
                     <button
                       type="button"
@@ -1158,7 +1192,11 @@ function PredictionWorkspace({
               X
             </button>
             <div className="image-preview-body">
-              <img src={activePreview} alt="Selected preview" className="image-preview-full" />
+              {selectedImages.find((item) => item.preview === activePreview)?.kind === 'video' ? (
+                <video src={activePreview} className="image-preview-full" controls autoPlay playsInline />
+              ) : (
+                <img src={activePreview} alt="Selected preview" className="image-preview-full" />
+              )}
             </div>
           </section>
         </div>
@@ -1169,7 +1207,7 @@ function PredictionWorkspace({
           <section className="modal-card modal-card-small" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h2>Delete image</h2>
+                <h2>Delete file</h2>
                 <p>This will remove the selected sample from the prediction batch.</p>
               </div>
               <button type="button" className="modal-close" onClick={() => setImagePendingDelete(null)}>

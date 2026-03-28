@@ -38,6 +38,7 @@ interface ModellingToast {
 interface UploadSummaryModal {
   disease: string
   count: number
+  itemType: 'images' | 'frames'
 }
 
 export default function ModellingPage() {
@@ -179,9 +180,9 @@ export default function ModellingPage() {
 
   const handleDiseaseUpload = async (disease: (typeof diseaseFolders)[number], files: FileList | null) => {
     if (!files || !files.length) return
-    const fileList = Array.from(files).filter((file) => file.type.startsWith('image/'))
+    const fileList = Array.from(files).filter((file) => file.type.startsWith('image/') || file.type.startsWith('video/'))
     if (!fileList.length) {
-      setToast({ text: 'No valid image files were found in that folder.', tone: 'error' })
+      setToast({ text: 'No valid image or video files were found in that folder.', tone: 'error' })
       return
     }
 
@@ -214,7 +215,8 @@ export default function ModellingPage() {
         }))
       }
 
-      setUploadSummaryModal({ disease, count: fileList.length })
+      const containsVideo = fileList.some((file) => file.type.startsWith('video/'))
+      setUploadSummaryModal({ disease, count: fileList.length, itemType: containsVideo ? 'frames' : 'images' })
       await fetchStatus()
     } catch (error) {
       setToast({ text: error instanceof Error ? error.message : 'Dataset upload failed.', tone: 'error' })
@@ -329,7 +331,7 @@ export default function ModellingPage() {
                   <span>
                     {busyAction === `upload-${disease}` && uploadProgressByDisease[disease]
                       ? `Uploading ${uploadProgressByDisease[disease]}%`
-                      : `${status?.dataset_summary?.[disease] ?? 0} images uploaded`}
+                      : `${status?.dataset_summary?.[disease] ?? 0} training frames ready`}
                   </span>
                   <input
                     ref={(element) => {
@@ -368,7 +370,7 @@ export default function ModellingPage() {
                 </div>
               ))}
             </div>
-            <p className="card-subtitle">Upload one folder for each disease class, then run training after all four classes are ready.</p>
+            <p className="card-subtitle">Upload one folder for each disease class. Images are used directly, and videos are converted into training frames before model training.</p>
           </div>
           <div className="modelling-action-list">
             <button
@@ -532,8 +534,10 @@ export default function ModellingPage() {
 
             <div className="modal-body modal-body-scroll">
               <div className="modelling-upload-summary">
-                <strong>{uploadSummaryModal.count.toLocaleString()} files uploaded</strong>
-                <span>The {uploadSummaryModal.disease} class is now updated inside the system dataset.</span>
+                <strong>{uploadSummaryModal.count.toLocaleString()} source file{uploadSummaryModal.count > 1 ? 's' : ''} uploaded</strong>
+                <span>
+                  The {uploadSummaryModal.disease} class is now updated inside the system dataset with {uploadSummaryModal.itemType}.
+                </span>
               </div>
             </div>
 

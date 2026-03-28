@@ -10,7 +10,9 @@ import threading
 import subprocess
 import re
 import sqlite3
+import tempfile
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import numpy as np
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
@@ -34,6 +36,11 @@ except ImportError as exc:
         "`python -m pip install -r requirements.txt` inside `server/`."
     ) from exc
 
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_PATH = r"C:\Users\USER\Pictures\Final Project\poultry_diseases"
@@ -47,6 +54,8 @@ MODELS_DIR = os.path.join(BASE_DIR, "models")
 ACTIVE_MODEL_FILE = os.path.join(MODELS_DIR, "active_model.txt")
 DB_PATH = os.path.join(BASE_DIR, "app_data.sqlite3")
 CONFIDENCE_THRESHOLD = 0.65
+VIDEO_FRAME_LIMIT = 12
+VIDEO_SAMPLE_SECONDS = 0.75
 
 app = FastAPI(title="Poultry Disease Classifier API")
 
@@ -163,6 +172,73 @@ def count_dataset_images(dataset_root: str):
             [name for name in os.listdir(class_dir) if name.lower().endswith((".png", ".jpg", ".jpeg"))]
         )
     return summary
+
+
+def ensure_video_support():
+    if cv2 is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Video support is not available yet because OpenCV is not installed on the server.",
+        )
+
+
+def preprocess_pil_image(img: Image.Image):
+    arr = tf.keras.preprocessing.image.img_to_array(img.convert("RGB"))
+    arr = tf.image.resize(arr, (img_size, img_size))
+    return (arr.numpy() if hasattr(arr, "numpy") else arr) / 255.0
+
+
+def extract_video_frames_from_path(video_path: str, max_frames: int = VIDEO_FRAME_LIMIT):
+    ensure_video_support()
+
+    capture = cv2.VideoCapture(video_path)
+    if not capture.isOpened():
+        capture.release()
+        raise HTTPException(status_code=400, detail="Invalid video: the file could not be opened.")
+
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+
+    frame_indices = set()
+    if frame_count > 0:
+        sample_total = min(max_frames, frame_count)
+        for index in np.linspace(0, max(frame_count - 1, 0), num=sample_total, dtype=int):
+            frame_indices.add(int(index))
+    elif fps > 0:
+        step = max(int(fps * VIDEO_SAMPLE_SECONDS), 1)
+        for index in range(0, step * max_frames, step):
+            frame_indices.add(index)
+    else:
+        frame_indices.update(range(max_frames))
+
+    selected_frames = []
+    current_index = 0
+
+    while len(selected_frames) < max_frames:
+        has_frame, frame = capture.read()
+        if not has_frame:
+            break
+        if current_index in frame_indices:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            selected_frames.append(Image.fromarray(rgb).convert("RGB"))
+        current_index += 1
+
+    capture.release()
+
+    if not selected_frames:
+        raise HTTPException(status_code=400, detail="No usable frames could be extracted from the video.")
+
+    return selected_frames
+
+
+def predict_from_images(images: list[Image.Image]):
+    batch = np.stack([preprocess_pil_image(img) for img in images], axis=0)
+    preds = model.predict(batch, verbose=0)
+    mean_preds = preds.mean(axis=0)
+    idx = int(np.argmax(mean_preds))
+    conf = float(mean_preds[idx])
+    probabilities = {class_names[i]: round(float(mean_preds[i]) * 100, 1) for i in range(len(class_names))}
+    return idx, conf, probabilities, len(images)
 
 
 def ensure_model_dir():
@@ -777,25 +853,48 @@ async def training_upload_dataset(label: str, files: list[UploadFile] = File(...
                 os.remove(existing_path)
 
     saved_count = 0
+    source_file_count = 0
     for upload in files:
         if not upload.filename:
             continue
-        if not upload.content_type or not upload.content_type.startswith("image/"):
+        contents = await upload.read()
+        content_type = upload.content_type or ""
+        safe_name = os.path.basename(upload.filename)
+
+        if content_type.startswith("image/"):
+            destination = os.path.join(class_dir, safe_name)
+            with open(destination, "wb") as target:
+                target.write(contents)
+            saved_count += 1
+            source_file_count += 1
             continue
 
-        safe_name = os.path.basename(upload.filename)
-        destination = os.path.join(class_dir, safe_name)
-        contents = await upload.read()
-        with open(destination, "wb") as target:
-            target.write(contents)
-        saved_count += 1
+        if content_type.startswith("video/"):
+            ensure_video_support()
+            suffix = os.path.splitext(safe_name)[1] or ".mp4"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_video:
+                temp_video.write(contents)
+                temp_video_path = temp_video.name
+
+            try:
+                frames = extract_video_frames_from_path(temp_video_path)
+                stem = os.path.splitext(safe_name)[0]
+                unique_prefix = uuid4().hex[:8]
+                for frame_index, frame in enumerate(frames, start=1):
+                    destination = os.path.join(class_dir, f"{stem}_{unique_prefix}_frame_{frame_index:02d}.jpg")
+                    frame.save(destination, format="JPEG", quality=92)
+                    saved_count += 1
+                source_file_count += 1
+            finally:
+                if os.path.exists(temp_video_path):
+                    os.remove(temp_video_path)
 
     if saved_count == 0:
-        raise HTTPException(status_code=400, detail="No valid image files were uploaded for this disease folder.")
+        raise HTTPException(status_code=400, detail="No valid image or video files were uploaded for this disease folder.")
 
     training_state["dataset_path"] = TRAINING_DATASET_ROOT
     return {
-        "message": f"Uploaded {saved_count} image(s) to {normalized_label}.",
+        "message": f"Uploaded {source_file_count} source file(s) and prepared {saved_count} training image(s) for {normalized_label}.",
         "dataset_path": TRAINING_DATASET_ROOT,
         "dataset_summary": count_dataset_images(TRAINING_DATASET_ROOT),
     }
@@ -920,31 +1019,40 @@ async def predict(file: UploadFile = File(...), batch_name: str | None = Form(No
     if not model_ready or model is None:
         raise HTTPException(status_code=503, detail="Model not loaded. Run train.py first.")
 
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File must be an image (PNG, JPG, JPEG)")
+    content_type = file.content_type or ""
+    contents = await file.read()
 
-    try:
-        contents = await file.read()
-        img = Image.open(BytesIO(contents)).convert("RGB")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
+    if content_type.startswith("image/"):
+        try:
+            images = [Image.open(BytesIO(contents)).convert("RGB")]
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid image: {str(exc)}") from exc
+    elif content_type.startswith("video/"):
+        ensure_video_support()
+        suffix = os.path.splitext(file.filename or "")[1] or ".mp4"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_video:
+            temp_video.write(contents)
+            temp_video_path = temp_video.name
 
-    arr = tf.keras.preprocessing.image.img_to_array(img)
-    arr = tf.image.resize(arr, (img_size, img_size))
-    arr = np.expand_dims(arr.numpy() if hasattr(arr, "numpy") else arr, 0) / 255.0
+        try:
+            images = extract_video_frames_from_path(temp_video_path)
+        finally:
+            if os.path.exists(temp_video_path):
+                os.remove(temp_video_path)
+    else:
+        raise HTTPException(status_code=400, detail="File must be an image or video.")
 
-    preds = model.predict(arr, verbose=0)[0]
-    idx = int(np.argmax(preds))
-    conf = float(preds[idx])
-
-    probabilities = {class_names[i]: round(float(preds[i]) * 100, 1) for i in range(len(class_names))}
+    idx, conf, probabilities, frame_count = predict_from_images(images)
 
     if conf < CONFIDENCE_THRESHOLD:
         response = {
             "disease": "Unable to classify",
             "confidence": round(conf * 100, 1),
             "low_confidence": True,
-            "message": "This image does not appear to be poultry-related or the model is uncertain. Please upload a clear poultry image.",
+            "message": (
+                f"This {'video' if content_type.startswith('video/') else 'image'} does not appear to be poultry-related "
+                "or the model is uncertain. Please upload a clearer sample."
+            ),
             "probabilities": probabilities,
         }
         log_prediction(file.filename or "unnamed-image", batch_name, response["disease"], response["confidence"], True)
@@ -954,7 +1062,7 @@ async def predict(file: UploadFile = File(...), batch_name: str | None = Form(No
         "disease": class_names[idx],
         "confidence": round(conf * 100, 1),
         "low_confidence": False,
-        "message": None,
+        "message": f"Prediction averaged across {frame_count} extracted video frame(s)." if content_type.startswith("video/") else None,
         "probabilities": probabilities,
     }
     log_prediction(file.filename or "unnamed-image", batch_name, response["disease"], response["confidence"], False)
